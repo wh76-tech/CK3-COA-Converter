@@ -2,16 +2,15 @@
 CK3 Coat of Arms (CoA) Converter - Desktop GUI Application
 A native desktop application built with CustomTkinter and Pillow that converts any
 image into a Crusader Kings 3 Coat of Arms clipboard code string.
-Includes bilingual English / Simplified Chinese (简体中文) support.
+Includes interactive visual crop/ROI frame and bilingual English / Simplified Chinese (简体中文) support.
 """
 
 import os
 import sys
-import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from typing import Optional, Tuple
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 
 try:
     import customtkinter as ctk
@@ -62,7 +61,7 @@ class CK3CoAApp(ctk.CTk):
 
         # Window Configuration
         self.title(i18n.get("window_title"))
-        self.geometry("1340x880")
+        self.geometry("1340x900")
         self.minsize(1100, 750)
 
         # State Variables
@@ -72,12 +71,24 @@ class CK3CoAApp(ctk.CTk):
         self.current_result: Optional[ConversionResult] = None
         self._update_job = None
 
+        # Crop / ROI State
+        self.crop_box: Tuple[int, int, int, int] = (0, 0, self.source_image.width, self.source_image.height)
+        self.crop_drag_mode: str = "none"  # "none", "new", "move", "nw", "ne", "sw", "se"
+        self.crop_drag_start = (0, 0)
+        self.crop_box_start = (0, 0, 0, 0)
+        self.crop_anchor = (0, 0)
+        self.canvas_scale: float = 1.0
+        self.canvas_offset_x: int = 0
+        self.canvas_offset_y: int = 0
+        self.orig_photo_img: Optional[ImageTk.PhotoImage] = None
+
         # Tab naming tracking
         self.tab_code_name = i18n.get("tab_script_code")
         self.tab_info_name = i18n.get("tab_details")
 
         # Build UI Components
         self._create_layout()
+        self._render_original_preview()
         self._trigger_conversion()
 
     def _create_layout(self):
@@ -128,11 +139,11 @@ class CK3CoAApp(ctk.CTk):
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color="gray70",
         )
-        self.sub_label.pack(anchor="w", padx=20, pady=(0, 12))
+        self.sub_label.pack(anchor="w", padx=20, pady=(0, 10))
 
-        # --- Section: Image Input ---
+        # --- Section 1: Image Input ---
         self.img_section = ctk.CTkFrame(self.sidebar_frame, fg_color=("gray85", "gray17"))
-        self.img_section.pack(fill="x", padx=15, pady=8)
+        self.img_section.pack(fill="x", padx=15, pady=6)
 
         self.img_header = ctk.CTkLabel(
             self.img_section,
@@ -140,27 +151,27 @@ class CK3CoAApp(ctk.CTk):
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=("gray40", "gray70"),
         )
-        self.img_header.pack(anchor="w", padx=15, pady=(10, 5))
+        self.img_header.pack(anchor="w", padx=15, pady=(8, 4))
 
         self.btn_open = ctk.CTkButton(
             self.img_section,
             text=i18n.get("btn_open_image"),
             font=ctk.CTkFont(size=13, weight="bold"),
-            height=36,
+            height=34,
             command=self._on_open_image,
         )
-        self.btn_open.pack(fill="x", padx=15, pady=6)
+        self.btn_open.pack(fill="x", padx=15, pady=4)
 
         self.btn_sample = ctk.CTkButton(
             self.img_section,
             text=i18n.get("btn_sample_shield"),
             font=ctk.CTkFont(size=12),
-            height=28,
+            height=26,
             fg_color=("gray75", "gray28"),
             hover_color=("gray65", "gray35"),
             command=self._on_load_sample,
         )
-        self.btn_sample.pack(fill="x", padx=15, pady=(0, 6))
+        self.btn_sample.pack(fill="x", padx=15, pady=(0, 4))
 
         self.lbl_image_info = ctk.CTkLabel(
             self.img_section,
@@ -174,11 +185,76 @@ class CK3CoAApp(ctk.CTk):
             text_color="gray70",
             justify="left",
         )
-        self.lbl_image_info.pack(anchor="w", padx=15, pady=(2, 10))
+        self.lbl_image_info.pack(anchor="w", padx=15, pady=(2, 8))
 
-        # --- Section: Conversion Parameters ---
+        # --- Section 2: Crop & Selection Frame ---
+        self.crop_section = ctk.CTkFrame(self.sidebar_frame, fg_color=("gray85", "gray17"))
+        self.crop_section.pack(fill="x", padx=15, pady=6)
+
+        self.crop_header = ctk.CTkLabel(
+            self.crop_section,
+            text=i18n.get("sec_crop"),
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=("gray40", "gray70"),
+        )
+        self.crop_header.pack(anchor="w", padx=15, pady=(8, 4))
+
+        # Checkbox: Convert Whole Picture
+        self.chk_whole_pic = ctk.CTkCheckBox(
+            self.crop_section,
+            text=i18n.get("chk_whole_image"),
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._on_crop_whole_toggle,
+        )
+        self.chk_whole_pic.select()  # Default: Convert whole picture
+        self.chk_whole_pic.pack(anchor="w", padx=15, pady=(4, 6))
+
+        # Sub-frame for crop options (active when whole picture is unchecked)
+        self.crop_options_frame = ctk.CTkFrame(self.crop_section, fg_color="transparent")
+        self.crop_options_frame.pack(fill="x", padx=15, pady=(0, 6))
+
+        self.lbl_crop_hint = ctk.CTkLabel(
+            self.crop_options_frame,
+            text=i18n.get("lbl_crop_hint"),
+            font=ctk.CTkFont(size=11),
+            text_color="#3b8ed0",
+            wraplength=320,
+            justify="left",
+        )
+        self.lbl_crop_hint.pack(anchor="w", pady=(2, 4))
+
+        self.chk_square_crop = ctk.CTkCheckBox(
+            self.crop_options_frame,
+            text=i18n.get("chk_square_crop"),
+            font=ctk.CTkFont(size=12),
+            command=self._on_square_crop_toggle,
+        )
+        self.chk_square_crop.select()  # Default: 1:1 square crop
+        self.chk_square_crop.pack(anchor="w", pady=(2, 4))
+
+        self.btn_reset_crop = ctk.CTkButton(
+            self.crop_options_frame,
+            text=i18n.get("btn_reset_crop"),
+            font=ctk.CTkFont(size=11),
+            height=24,
+            fg_color=("gray75", "gray28"),
+            hover_color=("gray65", "gray35"),
+            command=self._on_reset_crop_box,
+        )
+        self.btn_reset_crop.pack(fill="x", pady=(2, 4))
+
+        self.lbl_crop_status = ctk.CTkLabel(
+            self.crop_section,
+            text=i18n.get("lbl_crop_full", width=self.source_image.width, height=self.source_image.height),
+            font=ctk.CTkFont(size=11),
+            text_color="gray70",
+            justify="left",
+        )
+        self.lbl_crop_status.pack(anchor="w", padx=15, pady=(0, 8))
+
+        # --- Section 3: Conversion Parameters ---
         self.param_section = ctk.CTkFrame(self.sidebar_frame, fg_color=("gray85", "gray17"))
-        self.param_section.pack(fill="x", padx=15, pady=8)
+        self.param_section.pack(fill="x", padx=15, pady=6)
 
         self.param_header = ctk.CTkLabel(
             self.param_section,
@@ -186,7 +262,7 @@ class CK3CoAApp(ctk.CTk):
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=("gray40", "gray70"),
         )
-        self.param_header.pack(anchor="w", padx=15, pady=(10, 5))
+        self.param_header.pack(anchor="w", padx=15, pady=(8, 4))
 
         # Slider 1: Grid Resolution (16 to 120, default 64)
         self.lbl_res = ctk.CTkLabel(
@@ -194,7 +270,7 @@ class CK3CoAApp(ctk.CTk):
             text=i18n.get("lbl_resolution", res=64),
             font=ctk.CTkFont(size=13, weight="bold"),
         )
-        self.lbl_res.pack(anchor="w", padx=15, pady=(8, 2))
+        self.lbl_res.pack(anchor="w", padx=15, pady=(6, 2))
 
         self.slider_res = ctk.CTkSlider(
             self.param_section,
@@ -204,7 +280,7 @@ class CK3CoAApp(ctk.CTk):
             command=self._on_slider_change,
         )
         self.slider_res.set(64)
-        self.slider_res.pack(fill="x", padx=15, pady=(0, 5))
+        self.slider_res.pack(fill="x", padx=15, pady=(0, 4))
 
         # Slider 2: Colors K (2 to 64, default 24)
         self.lbl_colors = ctk.CTkLabel(
@@ -212,7 +288,7 @@ class CK3CoAApp(ctk.CTk):
             text=i18n.get("lbl_colors", colors=24),
             font=ctk.CTkFont(size=13, weight="bold"),
         )
-        self.lbl_colors.pack(anchor="w", padx=15, pady=(8, 2))
+        self.lbl_colors.pack(anchor="w", padx=15, pady=(6, 2))
 
         self.slider_colors = ctk.CTkSlider(
             self.param_section,
@@ -222,7 +298,7 @@ class CK3CoAApp(ctk.CTk):
             command=self._on_slider_change,
         )
         self.slider_colors.set(24)
-        self.slider_colors.pack(fill="x", padx=15, pady=(0, 5))
+        self.slider_colors.pack(fill="x", padx=15, pady=(0, 4))
 
         # Slider 3: Block Scale Multiplier (1.00 to 1.30, default 1.14)
         self.lbl_scale = ctk.CTkLabel(
@@ -230,7 +306,7 @@ class CK3CoAApp(ctk.CTk):
             text=i18n.get("lbl_scale", scale=1.14),
             font=ctk.CTkFont(size=13, weight="bold"),
         )
-        self.lbl_scale.pack(anchor="w", padx=15, pady=(8, 2))
+        self.lbl_scale.pack(anchor="w", padx=15, pady=(6, 2))
 
         self.slider_scale = ctk.CTkSlider(
             self.param_section,
@@ -240,11 +316,11 @@ class CK3CoAApp(ctk.CTk):
             command=self._on_slider_change,
         )
         self.slider_scale.set(1.14)
-        self.slider_scale.pack(fill="x", padx=15, pady=(0, 10))
+        self.slider_scale.pack(fill="x", padx=15, pady=(0, 8))
 
-        # --- Section: Advanced Algorithm Options ---
+        # --- Section 4: Advanced Algorithm Options ---
         self.adv_section = ctk.CTkFrame(self.sidebar_frame, fg_color=("gray85", "gray17"))
-        self.adv_section.pack(fill="x", padx=15, pady=8)
+        self.adv_section.pack(fill="x", padx=15, pady=6)
 
         self.adv_header = ctk.CTkLabel(
             self.adv_section,
@@ -252,7 +328,7 @@ class CK3CoAApp(ctk.CTk):
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=("gray40", "gray70"),
         )
-        self.adv_header.pack(anchor="w", padx=15, pady=(10, 5))
+        self.adv_header.pack(anchor="w", padx=15, pady=(8, 4))
 
         # Quantization Method
         self.q_label = ctk.CTkLabel(self.adv_section, text=i18n.get("lbl_quantize"), font=ctk.CTkFont(size=12))
@@ -263,7 +339,7 @@ class CK3CoAApp(ctk.CTk):
             command=lambda _: self._on_param_change(),
         )
         self.opt_quantize.set("MEDIANCUT")
-        self.opt_quantize.pack(fill="x", padx=15, pady=(0, 8))
+        self.opt_quantize.pack(fill="x", padx=15, pady=(0, 6))
 
         # Dithering Checkbox
         self.chk_dither = ctk.CTkCheckBox(
@@ -272,7 +348,7 @@ class CK3CoAApp(ctk.CTk):
             font=ctk.CTkFont(size=12),
             command=self._on_param_change,
         )
-        self.chk_dither.pack(anchor="w", padx=15, pady=(4, 8))
+        self.chk_dither.pack(anchor="w", padx=15, pady=(4, 6))
 
         # Background Mode
         self.bg_label = ctk.CTkLabel(self.adv_section, text=i18n.get("lbl_bg_mode"), font=ctk.CTkFont(size=12))
@@ -283,7 +359,7 @@ class CK3CoAApp(ctk.CTk):
             command=lambda _: self._on_param_change(),
         )
         self.opt_bg.set(i18n.get("bg_mode_auto"))
-        self.opt_bg.pack(fill="x", padx=15, pady=(0, 8))
+        self.opt_bg.pack(fill="x", padx=15, pady=(0, 6))
 
         # Header Syntax Format
         self.hdr_label = ctk.CTkLabel(self.adv_section, text=i18n.get("lbl_header_format"), font=ctk.CTkFont(size=12))
@@ -294,7 +370,7 @@ class CK3CoAApp(ctk.CTk):
             command=lambda _: self._on_param_change(),
         )
         self.opt_header.set("coa_title_custom")
-        self.opt_header.pack(fill="x", padx=15, pady=(0, 8))
+        self.opt_header.pack(fill="x", padx=15, pady=(0, 6))
 
         # Show Wireframes Checkbox
         self.chk_wireframes = ctk.CTkCheckBox(
@@ -303,11 +379,11 @@ class CK3CoAApp(ctk.CTk):
             font=ctk.CTkFont(size=12),
             command=self._on_param_change,
         )
-        self.chk_wireframes.pack(anchor="w", padx=15, pady=(4, 12))
+        self.chk_wireframes.pack(anchor="w", padx=15, pady=(4, 10))
 
-        # --- Section: Actions & Clipboard ---
+        # --- Section 5: Actions & Clipboard ---
         self.action_section = ctk.CTkFrame(self.sidebar_frame, fg_color=("gray85", "gray17"))
-        self.action_section.pack(fill="x", padx=15, pady=(8, 20))
+        self.action_section.pack(fill="x", padx=15, pady=(6, 16))
 
         self.action_header = ctk.CTkLabel(
             self.action_section,
@@ -315,40 +391,40 @@ class CK3CoAApp(ctk.CTk):
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=("gray40", "gray70"),
         )
-        self.action_header.pack(anchor="w", padx=15, pady=(10, 5))
+        self.action_header.pack(anchor="w", padx=15, pady=(8, 4))
 
         self.btn_copy = ctk.CTkButton(
             self.action_section,
             text=i18n.get("btn_copy_clipboard"),
             font=ctk.CTkFont(size=14, weight="bold"),
-            height=42,
+            height=40,
             fg_color="#1f6aa5",
             hover_color="#144870",
             command=self._on_copy_clipboard,
         )
-        self.btn_copy.pack(fill="x", padx=15, pady=6)
+        self.btn_copy.pack(fill="x", padx=15, pady=5)
 
         self.btn_save_txt = ctk.CTkButton(
             self.action_section,
             text=i18n.get("btn_save_txt"),
             font=ctk.CTkFont(size=13),
-            height=34,
+            height=32,
             fg_color=("gray75", "gray28"),
             hover_color=("gray65", "gray35"),
             command=self._on_save_txt,
         )
-        self.btn_save_txt.pack(fill="x", padx=15, pady=(0, 6))
+        self.btn_save_txt.pack(fill="x", padx=15, pady=(0, 5))
 
         self.btn_save_png = ctk.CTkButton(
             self.action_section,
             text=i18n.get("btn_save_png"),
             font=ctk.CTkFont(size=12),
-            height=30,
+            height=28,
             fg_color=("gray75", "gray28"),
             hover_color=("gray65", "gray35"),
             command=self._on_save_png,
         )
-        self.btn_save_png.pack(fill="x", padx=15, pady=(0, 10))
+        self.btn_save_png.pack(fill="x", padx=15, pady=(0, 8))
 
         self.lbl_action_status = ctk.CTkLabel(
             self.action_section,
@@ -356,7 +432,7 @@ class CK3CoAApp(ctk.CTk):
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color="#2ecc71",
         )
-        self.lbl_action_status.pack(anchor="center", padx=15, pady=(0, 10))
+        self.lbl_action_status.pack(anchor="center", padx=15, pady=(0, 8))
 
         # ----------------------------------------------------
         # Right Main Panel (Stats + Visual Preview + Code View)
@@ -416,7 +492,7 @@ class CK3CoAApp(ctk.CTk):
         self.preview_container.grid_columnconfigure(1, weight=1)
         self.preview_container.grid_rowconfigure(0, weight=1)
 
-        # Left Canvas Frame: Original Image
+        # Left Canvas Frame: Original Image with Interactive Crop Box
         self.orig_box = ctk.CTkFrame(self.preview_container, fg_color=("gray85", "gray17"))
         self.orig_box.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
         self.orig_title = ctk.CTkLabel(
@@ -424,10 +500,33 @@ class CK3CoAApp(ctk.CTk):
             text=i18n.get("preview_original"),
             font=ctk.CTkFont(size=13, weight="bold"),
         )
-        self.orig_title.pack(anchor="w", padx=15, pady=(10, 5))
+        self.orig_title.pack(anchor="w", padx=15, pady=(8, 4))
 
-        self.orig_canvas_label = ctk.CTkLabel(self.orig_box, text="")
-        self.orig_canvas_label.pack(expand=True, padx=10, pady=(0, 10))
+        # Tkinter Canvas for Interactive Crop Rendering and Mouse Events
+        self.orig_canvas = tk.Canvas(
+            self.orig_box,
+            width=320,
+            height=320,
+            bg="#181a1e",
+            highlightthickness=0,
+            cursor="crosshair",
+        )
+        self.orig_canvas.pack(expand=True, padx=10, pady=(0, 6))
+
+        # Mouse Event Bindings for Cropping
+        self.orig_canvas.bind("<ButtonPress-1>", self._on_canvas_press)
+        self.orig_canvas.bind("<B1-Motion>", self._on_canvas_motion)
+        self.orig_canvas.bind("<ButtonRelease-1>", self._on_canvas_release)
+        self.orig_canvas.bind("<Motion>", self._on_canvas_hover)
+
+        # Bottom badge on original frame
+        self.orig_bottom_label = ctk.CTkLabel(
+            self.orig_box,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color="gray70",
+        )
+        self.orig_bottom_label.pack(anchor="center", pady=(0, 6))
 
         # Right Canvas Frame: Quantized CK3 Preview
         self.ck3_box = ctk.CTkFrame(self.preview_container, fg_color=("gray85", "gray17"))
@@ -437,14 +536,22 @@ class CK3CoAApp(ctk.CTk):
             text=i18n.get("preview_ck3"),
             font=ctk.CTkFont(size=13, weight="bold"),
         )
-        self.ck3_title.pack(anchor="w", padx=15, pady=(10, 5))
+        self.ck3_title.pack(anchor="w", padx=15, pady=(8, 4))
 
         self.ck3_canvas_label = ctk.CTkLabel(self.ck3_box, text="")
-        self.ck3_canvas_label.pack(expand=True, padx=10, pady=(0, 10))
+        self.ck3_canvas_label.pack(expand=True, padx=10, pady=(0, 6))
+
+        self.ck3_bottom_label = ctk.CTkLabel(
+            self.ck3_box,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color="gray70",
+        )
+        self.ck3_bottom_label.pack(anchor="center", pady=(0, 6))
 
         # 3. Code View Tabview / Textbox
-        self.bottom_tabs = ctk.CTkTabview(self.main_frame, height=220)
-        self.bottom_tabs.grid(row=2, column=0, sticky="nsew", padx=0, pady=(10, 0))
+        self.bottom_tabs = ctk.CTkTabview(self.main_frame, height=200)
+        self.bottom_tabs.grid(row=2, column=0, sticky="nsew", padx=0, pady=(8, 0))
 
         self.tab_code = self.bottom_tabs.add(self.tab_code_name)
         self.tab_info = self.bottom_tabs.add(self.tab_info_name)
@@ -465,26 +572,313 @@ class CK3CoAApp(ctk.CTk):
         )
         self.txt_info.pack(fill="both", expand=True, padx=5, pady=5)
 
+    # ----------------------------------------------------
+    # Crop / Selection Handling & Canvas Rendering
+    # ----------------------------------------------------
+    def _canvas_to_img_coords(self, cx: int, cy: int) -> Tuple[int, int]:
+        """Converts canvas pixel coordinates into source image coordinates."""
+        orig_w = self.source_image.width
+        orig_h = self.source_image.height
+        if self.canvas_scale <= 0:
+            return 0, 0
+        img_x = int((cx - self.canvas_offset_x) / self.canvas_scale)
+        img_y = int((cy - self.canvas_offset_y) / self.canvas_scale)
+        img_x = max(0, min(orig_w, img_x))
+        img_y = max(0, min(orig_h, img_y))
+        return img_x, img_y
+
+    def _img_to_canvas_coords(self, ix: int, iy: int) -> Tuple[int, int]:
+        """Converts source image coordinates into canvas pixel coordinates."""
+        cx = int(self.canvas_offset_x + ix * self.canvas_scale)
+        cy = int(self.canvas_offset_y + iy * self.canvas_scale)
+        return cx, cy
+
+    def _render_original_preview(self):
+        """Renders original image on canvas with optional interactive crop frame overlay."""
+        disp_size = 320
+        orig_w = self.source_image.width
+        orig_h = self.source_image.height
+
+        scale = min(disp_size / float(orig_w), disp_size / float(orig_h))
+        disp_w = max(1, int(orig_w * scale))
+        disp_h = max(1, int(orig_h * scale))
+        offset_x = (disp_size - disp_w) // 2
+        offset_y = (disp_size - disp_h) // 2
+
+        self.canvas_scale = scale
+        self.canvas_offset_x = offset_x
+        self.canvas_offset_y = offset_y
+
+        # Base image
+        resized = self.source_image.copy()
+        resized.thumbnail((disp_w, disp_h), Image.Resampling.LANCZOS)
+
+        canvas_img = Image.new("RGBA", (disp_size, disp_size), (24, 26, 30, 255))
+        if resized.mode == "RGBA":
+            canvas_img.paste(resized, (offset_x, offset_y), mask=resized)
+        else:
+            canvas_img.paste(resized, (offset_x, offset_y))
+
+        is_whole = bool(self.chk_whole_pic.get())
+
+        if not is_whole:
+            # Draw semi-transparent dimming outside the crop area and a bright border
+            x1, y1, x2, y2 = self.crop_box
+            cx1, cy1 = self._img_to_canvas_coords(x1, y1)
+            cx2, cy2 = self._img_to_canvas_coords(x2, y2)
+            rcx1, rcx2 = min(cx1, cx2), max(cx1, cx2)
+            rcy1, rcy2 = min(cy1, cy2), max(cy1, cy2)
+
+            # Darkened exterior overlay
+            overlay = Image.new("RGBA", (disp_size, disp_size), (0, 0, 0, 155))
+            odraw = ImageDraw.Draw(overlay)
+
+            # Clear inside crop box so selected region is 100% bright
+            odraw.rectangle([rcx1, rcy1, rcx2, rcy2], fill=(0, 0, 0, 0))
+
+            # Draw glowing golden/cyan frame
+            odraw.rectangle([rcx1, rcy1, rcx2, rcy2], outline=(255, 215, 0, 255), width=2)
+
+            # Draw corner resize handles
+            hs = 4
+            for hx, hy in [(rcx1, rcy1), (rcx2, rcy1), (rcx1, rcy2), (rcx2, rcy2)]:
+                odraw.rectangle([hx - hs, hy - hs, hx + hs, hy + hs], fill=(255, 215, 0, 255), outline=(0, 0, 0, 255))
+
+            canvas_img = Image.alpha_composite(canvas_img, overlay)
+
+            # Update crop status text
+            bw = abs(x2 - x1)
+            bh = abs(y2 - y1)
+            self.lbl_crop_status.configure(
+                text=i18n.get("lbl_crop_info", width=bw, height=bh, x=min(x1, x2), y=min(y1, y2)),
+                text_color="#e6b800",
+            )
+            self.orig_bottom_label.configure(
+                text=f"Selected: {bw}x{bh} px ({(bw*bh/(orig_w*orig_h))*100:.0f}% of image)"
+            )
+        else:
+            # Whole picture is being used
+            self.lbl_crop_status.configure(
+                text=i18n.get("lbl_crop_full", width=orig_w, height=orig_h),
+                text_color="gray70",
+            )
+            self.orig_bottom_label.configure(text=f"Full Image: {orig_w}x{orig_h} px")
+
+        # Convert to ImageTk and update canvas
+        self.orig_photo_img = ImageTk.PhotoImage(canvas_img)
+        self.orig_canvas.delete("all")
+        self.orig_canvas.create_image(0, 0, anchor="nw", image=self.orig_photo_img)
+
+    def _on_canvas_press(self, event):
+        """Handles mouse press on original image canvas."""
+        if self.chk_whole_pic.get():
+            # If user clicks and drags while whole picture is checked, uncheck it to enable cropping
+            self.chk_whole_pic.deselect()
+            self._on_crop_whole_toggle()
+
+        orig_x, orig_y = self._canvas_to_img_coords(event.x, event.y)
+        x1, y1, x2, y2 = self.crop_box
+        cx1, cy1 = self._img_to_canvas_coords(x1, y1)
+        cx2, cy2 = self._img_to_canvas_coords(x2, y2)
+        rcx1, rcx2 = min(cx1, cx2), max(cx1, cx2)
+        rcy1, rcy2 = min(cy1, cy2), max(cy1, cy2)
+
+        tol = 10
+        # Check corner handles
+        if abs(event.x - rcx1) < tol and abs(event.y - rcy1) < tol:
+            self.crop_drag_mode = "nw"
+        elif abs(event.x - rcx2) < tol and abs(event.y - rcy1) < tol:
+            self.crop_drag_mode = "ne"
+        elif abs(event.x - rcx1) < tol and abs(event.y - rcy2) < tol:
+            self.crop_drag_mode = "sw"
+        elif abs(event.x - rcx2) < tol and abs(event.y - rcy2) < tol:
+            self.crop_drag_mode = "se"
+        elif min(x1, x2) <= orig_x <= max(x1, x2) and min(y1, y2) <= orig_y <= max(y1, y2):
+            # Inside crop box -> move/pan mode
+            self.crop_drag_mode = "move"
+            self.crop_drag_start = (orig_x, orig_y)
+            self.crop_box_start = (x1, y1, x2, y2)
+        else:
+            # Outside -> start new selection box
+            self.crop_drag_mode = "new"
+            self.crop_anchor = (orig_x, orig_y)
+            self.crop_box = (orig_x, orig_y, orig_x, orig_y)
+
+    def _on_canvas_motion(self, event):
+        """Handles mouse drag to resize or move crop box."""
+        if self.crop_drag_mode == "none":
+            return
+
+        curr_x, curr_y = self._canvas_to_img_coords(event.x, event.y)
+        orig_w = self.source_image.width
+        orig_h = self.source_image.height
+        is_square = bool(self.chk_square_crop.get())
+
+        if self.crop_drag_mode == "new":
+            ax, ay = self.crop_anchor
+            dx = curr_x - ax
+            dy = curr_y - ay
+            if is_square:
+                side = max(abs(dx), abs(dy))
+                sx = 1 if dx >= 0 else -1
+                sy = 1 if dy >= 0 else -1
+                curr_x = max(0, min(orig_w, ax + sx * side))
+                curr_y = max(0, min(orig_h, ay + sy * side))
+            self.crop_box = (min(ax, curr_x), min(ay, curr_y), max(ax, curr_x), max(ay, curr_y))
+
+        elif self.crop_drag_mode == "move":
+            start_x, start_y = self.crop_drag_start
+            bx1, by1, bx2, by2 = self.crop_box_start
+            dx = curr_x - start_x
+            dy = curr_y - start_y
+            bw = bx2 - bx1
+            bh = by2 - by1
+            nx1 = max(0, min(orig_w - bw, bx1 + dx))
+            ny1 = max(0, min(orig_h - bh, by1 + dy))
+            self.crop_box = (nx1, ny1, nx1 + bw, ny1 + bh)
+
+        elif self.crop_drag_mode in ("nw", "ne", "sw", "se"):
+            x1, y1, x2, y2 = self.crop_box
+            if self.crop_drag_mode == "nw":
+                x1, y1 = curr_x, curr_y
+            elif self.crop_drag_mode == "ne":
+                x2, y1 = curr_x, curr_y
+            elif self.crop_drag_mode == "sw":
+                x1, y2 = curr_x, curr_y
+            elif self.crop_drag_mode == "se":
+                x2, y2 = curr_x, curr_y
+
+            if is_square:
+                w = abs(x2 - x1)
+                h = abs(y2 - y1)
+                side = max(w, h)
+                if self.crop_drag_mode == "se":
+                    x2 = min(orig_w, x1 + side)
+                    y2 = min(orig_h, y1 + side)
+                elif self.crop_drag_mode == "nw":
+                    x1 = max(0, x2 - side)
+                    y1 = max(0, y2 - side)
+                elif self.crop_drag_mode == "ne":
+                    x2 = min(orig_w, x1 + side)
+                    y1 = max(0, y2 - side)
+                elif self.crop_drag_mode == "sw":
+                    x1 = max(0, x2 - side)
+                    y2 = min(orig_h, y1 + side)
+
+            self.crop_box = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+
+        self._render_original_preview()
+        self._debounced_trigger()
+
+    def _on_canvas_release(self, _event):
+        """Finalizes crop box upon mouse release."""
+        self.crop_drag_mode = "none"
+        x1, y1, x2, y2 = self.crop_box
+        # If user made a tiny/empty box, default to 75% center box
+        if x2 - x1 < 8 or y2 - y1 < 8:
+            orig_w, orig_h = self.source_image.width, self.source_image.height
+            side = int(min(orig_w, orig_h) * 0.75)
+            cx, cy = orig_w // 2, orig_h // 2
+            self.crop_box = (
+                max(0, cx - side // 2),
+                max(0, cy - side // 2),
+                min(orig_w, cx + side // 2),
+                min(orig_h, cy + side // 2),
+            )
+        self._render_original_preview()
+        self._trigger_conversion()
+
+    def _on_canvas_hover(self, event):
+        """Updates mouse cursor based on hover position."""
+        if bool(self.chk_whole_pic.get()):
+            self.orig_canvas.configure(cursor="crosshair")
+            return
+
+        x1, y1, x2, y2 = self.crop_box
+        cx1, cy1 = self._img_to_canvas_coords(x1, y1)
+        cx2, cy2 = self._img_to_canvas_coords(x2, y2)
+        rcx1, rcx2 = min(cx1, cx2), max(cx1, cx2)
+        rcy1, rcy2 = min(cy1, cy2), max(cy1, cy2)
+
+        tol = 10
+        if (abs(event.x - rcx1) < tol and abs(event.y - rcy1) < tol) or (abs(event.x - rcx2) < tol and abs(event.y - rcy2) < tol):
+            self.orig_canvas.configure(cursor="size_nw_se")
+        elif (abs(event.x - rcx2) < tol and abs(event.y - rcy1) < tol) or (abs(event.x - rcx1) < tol and abs(event.y - rcy2) < tol):
+            self.orig_canvas.configure(cursor="size_ne_sw")
+        elif rcx1 < event.x < rcx2 and rcy1 < event.y < rcy2:
+            self.orig_canvas.configure(cursor="fleur")
+        else:
+            self.orig_canvas.configure(cursor="crosshair")
+
+    def _on_crop_whole_toggle(self):
+        """Toggles between whole picture conversion and cropped ROI conversion."""
+        if not self.chk_whole_pic.get():
+            # If turning off whole picture, initialize crop box to center square if not already set
+            x1, y1, x2, y2 = self.crop_box
+            orig_w, orig_h = self.source_image.width, self.source_image.height
+            if x2 - x1 >= orig_w and y2 - y1 >= orig_h:
+                side = int(min(orig_w, orig_h) * 0.75)
+                cx, cy = orig_w // 2, orig_h // 2
+                self.crop_box = (
+                    max(0, cx - side // 2),
+                    max(0, cy - side // 2),
+                    min(orig_w, cx + side // 2),
+                    min(orig_h, cy + side // 2),
+                )
+        self._render_original_preview()
+        self._trigger_conversion()
+
+    def _on_square_crop_toggle(self):
+        """Enforces 1:1 square crop aspect ratio when checked."""
+        if self.chk_square_crop.get() and not self.chk_whole_pic.get():
+            x1, y1, x2, y2 = self.crop_box
+            w = x2 - x1
+            h = y2 - y1
+            side = max(w, h)
+            orig_w, orig_h = self.source_image.width, self.source_image.height
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
+            half = side // 2
+            self.crop_box = (
+                max(0, cx - half),
+                max(0, cy - half),
+                min(orig_w, cx + half),
+                min(orig_h, cy + half),
+            )
+            self._render_original_preview()
+            self._trigger_conversion()
+
+    def _on_reset_crop_box(self):
+        """Resets crop box to full image or center box."""
+        orig_w, orig_h = self.source_image.width, self.source_image.height
+        side = int(min(orig_w, orig_h) * 0.8)
+        cx, cy = orig_w // 2, orig_h // 2
+        self.crop_box = (
+            max(0, cx - side // 2),
+            max(0, cy - side // 2),
+            min(orig_w, cx + side // 2),
+            min(orig_h, cy + side // 2),
+        )
+        self._render_original_preview()
+        self._trigger_conversion()
+
+    # ----------------------------------------------------
+    # UI Language & Param Handlers
+    # ----------------------------------------------------
     def _on_language_change(self, selected_lang: str):
         new_lang = "zh" if "中文" in selected_lang else "en"
         i18n.set_language(new_lang)
 
         # Update window title
         self.title(i18n.get("window_title"))
-
-        # Update language label
         self.lbl_lang.configure(text=i18n.get("language_label"))
-
-        # Update titles
         self.title_label.configure(text=i18n.get("app_title"))
         self.sub_label.configure(text=i18n.get("app_subtitle"))
 
-        # Update section headers & buttons
+        # Section 1: Input image
         self.img_header.configure(text=i18n.get("sec_input_image"))
         self.btn_open.configure(text=i18n.get("btn_open_image"))
         self.btn_sample.configure(text=i18n.get("btn_sample_shield"))
-        
-        # Update image info
         display_name = i18n.get("image_loaded_default") if self.is_default_image else self.source_filename
         self.lbl_image_info.configure(
             text=i18n.get(
@@ -495,7 +889,14 @@ class CK3CoAApp(ctk.CTk):
             )
         )
 
-        # Parameters section
+        # Section 2: Crop
+        self.crop_header.configure(text=i18n.get("sec_crop"))
+        self.chk_whole_pic.configure(text=i18n.get("chk_whole_image"))
+        self.lbl_crop_hint.configure(text=i18n.get("lbl_crop_hint"))
+        self.chk_square_crop.configure(text=i18n.get("chk_square_crop"))
+        self.btn_reset_crop.configure(text=i18n.get("btn_reset_crop"))
+
+        # Section 3: Parameters
         self.param_header.configure(text=i18n.get("sec_parameters"))
         res = int(self.slider_res.get())
         colors = int(self.slider_colors.get())
@@ -504,7 +905,7 @@ class CK3CoAApp(ctk.CTk):
         self.lbl_colors.configure(text=i18n.get("lbl_colors", colors=colors))
         self.lbl_scale.configure(text=i18n.get("lbl_scale", scale=scale))
 
-        # Algorithm section
+        # Section 4: Algorithm
         self.adv_header.configure(text=i18n.get("sec_algorithm"))
         self.q_label.configure(text=i18n.get("lbl_quantize"))
         self.chk_dither.configure(text=i18n.get("chk_dithering"))
@@ -515,7 +916,7 @@ class CK3CoAApp(ctk.CTk):
         self.hdr_label.configure(text=i18n.get("lbl_header_format"))
         self.chk_wireframes.configure(text=i18n.get("chk_wireframes"))
 
-        # Export section
+        # Section 5: Export
         self.action_header.configure(text=i18n.get("sec_export"))
         self.btn_copy.configure(text=i18n.get("btn_copy_clipboard"))
         self.btn_save_txt.configure(text=i18n.get("btn_save_txt"))
@@ -535,7 +936,7 @@ class CK3CoAApp(ctk.CTk):
             self.bottom_tabs.rename(self.tab_info_name, new_tab_info_name)
             self.tab_info_name = new_tab_info_name
 
-        # Re-render current results with new language strings
+        self._render_original_preview()
         if self.current_result:
             self._update_ui_with_result(self.current_result)
 
@@ -578,6 +979,7 @@ class CK3CoAApp(ctk.CTk):
             self.source_image = loaded_img.copy()
             self.source_filename = os.path.basename(filename)
             self.is_default_image = False
+            self.crop_box = (0, 0, self.source_image.width, self.source_image.height)
             self.lbl_image_info.configure(
                 text=i18n.get(
                     "image_info",
@@ -586,6 +988,7 @@ class CK3CoAApp(ctk.CTk):
                     height=self.source_image.height,
                 )
             )
+            self._render_original_preview()
             self._trigger_conversion()
         except Exception as e:
             messagebox.showerror(
@@ -597,6 +1000,7 @@ class CK3CoAApp(ctk.CTk):
         self.source_image = create_default_heraldic_sample()
         self.source_filename = i18n.get("image_loaded_default")
         self.is_default_image = True
+        self.crop_box = (0, 0, self.source_image.width, self.source_image.height)
         self.lbl_image_info.configure(
             text=i18n.get(
                 "image_info",
@@ -605,6 +1009,7 @@ class CK3CoAApp(ctk.CTk):
                 height=self.source_image.height,
             )
         )
+        self._render_original_preview()
         self._trigger_conversion()
 
     def _trigger_conversion(self):
@@ -618,6 +1023,18 @@ class CK3CoAApp(ctk.CTk):
         header = self.opt_header.get()
         show_wireframes = bool(self.chk_wireframes.get())
 
+        # Determine target image to convert (Full image vs Cropped region)
+        if self.chk_whole_pic.get():
+            img_to_convert = self.source_image
+        else:
+            x1, y1, x2, y2 = self.crop_box
+            x1, x2 = min(x1, x2), max(x1, x2)
+            y1, y2 = min(y1, y2), max(y1, y2)
+            if x2 - x1 >= 4 and y2 - y1 >= 4:
+                img_to_convert = self.source_image.crop((x1, y1, x2, y2))
+            else:
+                img_to_convert = self.source_image
+
         converter = CK3CoAConverter(
             grid_width=res,
             grid_height=res,
@@ -630,7 +1047,7 @@ class CK3CoAApp(ctk.CTk):
             show_wireframes=show_wireframes,
         )
 
-        result = converter.convert(self.source_image)
+        result = converter.convert(img_to_convert)
         self.current_result = result
         self._update_ui_with_result(result)
 
@@ -659,31 +1076,15 @@ class CK3CoAApp(ctk.CTk):
                 text_color="#2ecc71",
             )
 
-        # 2. Update Previews
+        # 2. Update CK3 Preview Canvas
         disp_size = 320
-        orig_copy = self.source_image.copy()
-        orig_copy.thumbnail((disp_size, disp_size), Image.Resampling.LANCZOS)
-        orig_padded = Image.new("RGBA", (disp_size, disp_size), (24, 26, 30, 255))
-        ox = (disp_size - orig_copy.width) // 2
-        oy = (disp_size - orig_copy.height) // 2
-        if orig_copy.mode == "RGBA":
-            orig_padded.paste(orig_copy, (ox, oy), mask=orig_copy)
-        else:
-            orig_padded.paste(orig_copy, (ox, oy))
-
-        orig_ctk = ctk.CTkImage(
-            light_image=orig_padded, dark_image=orig_padded, size=(disp_size, disp_size)
-        )
-        self.orig_canvas_label.configure(image=orig_ctk)
-        self.orig_canvas_label.image = orig_ctk
-
-        # CK3 Preview display
         preview_resized = res.preview_image.resize((disp_size, disp_size), Image.Resampling.NEAREST)
         ck3_ctk = ctk.CTkImage(
             light_image=preview_resized, dark_image=preview_resized, size=(disp_size, disp_size)
         )
         self.ck3_canvas_label.configure(image=ck3_ctk)
         self.ck3_canvas_label.image = ck3_ctk
+        self.ck3_bottom_label.configure(text=f"CK3 Shield Mesh: {res.width}x{res.height} ({res.total_instances:,} emblems)")
 
         # 3. Update Code Textbox
         self.txt_code.delete("0.0", "end")

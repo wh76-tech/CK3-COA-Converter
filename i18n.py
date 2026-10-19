@@ -23,6 +23,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "dialog_open_error": "Failed to Open Image",
         "dialog_open_error_msg": "Could not load image:\n{error}",
 
+        # Section: Crop & Selection
+        "sec_crop": "CROP & SELECTION FRAME",
+        "chk_whole_image": "Convert Whole Picture",
+        "chk_square_crop": "Square Aspect Ratio (1:1)",
+        "btn_reset_crop": "🔄 Reset Selection",
+        "lbl_crop_hint": "💡 Click & drag on original image to crop area",
+        "lbl_crop_info": "Crop: {width}x{height} px (at X:{x}, Y:{y})",
+        "lbl_crop_full": "Using entire image ({width}x{height} px)",
+
         # Section: Conversion Parameters
         "sec_parameters": "CONVERSION PARAMETERS",
         "lbl_resolution": "Grid Resolution: {res} x {res}",
@@ -61,7 +70,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "badge_warning": "⚠️ High Instances: {instances:,} (>3,500 limit). May degrade CK3 FPS!",
 
         # Previews
-        "preview_original": "Original Input Image",
+        "preview_original": "Original Input Image (Interactive Crop)",
         "preview_ck3": "Quantized CK3 Grid Preview (In-Game Reconstruction)",
 
         # Tabs & Details
@@ -93,6 +102,15 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "dialog_open_title": "选择要转换为 CK3 纹章的图片",
         "dialog_open_error": "打开图片失败",
         "dialog_open_error_msg": "无法加载图片文件:\n{error}",
+
+        # Section: Crop & Selection
+        "sec_crop": "裁剪与选区范围",
+        "chk_whole_image": "转换整张图片 (不裁剪)",
+        "chk_square_crop": "锁定正方形选区 (1:1)",
+        "btn_reset_crop": "🔄 重置选区范围",
+        "lbl_crop_hint": "💡 在原始图片上按住鼠标拖拽即可框选区域",
+        "lbl_crop_info": "选区尺寸: {width}x{height} 像素 (起点 X:{x}, Y:{y})",
+        "lbl_crop_full": "使用整张图片 ({width}x{height} 像素)",
 
         # Section: Conversion Parameters
         "sec_parameters": "转换参数设置",
@@ -132,7 +150,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "badge_warning": "⚠️ 图元数量偏高: {instances:,} (超过3500限制)，可能影响游戏流畅度！",
 
         # Previews
-        "preview_original": "原始输入图片",
+        "preview_original": "原始输入图片 (支持交互式框选裁剪)",
         "preview_ck3": "CK3 网格量化预览 (游戏内实际渲染重构)",
 
         # Tabs & Details

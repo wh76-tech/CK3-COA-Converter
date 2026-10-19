@@ -8,6 +8,10 @@ A standalone native desktop GUI application built in Python (`CustomTkinter` and
 
 - **Native Modern Desktop GUI**: Built with CustomTkinter for high-DPI crisp dark theme styling, responsive parameter sliders, and real-time interactive preview.
 - **Bilingual Interface (English / 简体中文)**: Switch languages on the fly with a single click without needing to restart the app.
+- **Interactive Visual Crop Frame & ROI Selection**:
+  - Click and drag directly on the original image preview to select any specific region of interest to convert.
+  - Includes a **"Convert Whole Picture"** checkbox (ticking it instantly uses the entire original picture).
+  - Real-time shaded overlay with corner resize handles and optional 1:1 square aspect ratio lock.
 - **Side-by-Side Visual Preview**: Displays the original uploaded image next to the exact reconstructed quantized CK3 grid preview so you know what it looks like before pasting into the game.
 - **2D Greedy Rectangular Meshing**:
   - Automatically merges contiguous horizontal and vertical regions of identical color into maximal rectangles.
